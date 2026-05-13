@@ -41,6 +41,36 @@ resolve_binpath() {
 	fi
 }
 
+normalize_runtime_path() {
+	local path="$1" fallback="$2" binpath="$3" mode="$4" parent
+	[ -n "$path" ] || path="$fallback"
+	while [ "${path%/}" != "$path" ]; do
+		path="${path%/}"
+	done
+	[ -n "$path" ] || path="$fallback"
+	case "$path" in
+		"$binpath"|"$binpath"/*) path="$fallback" ;;
+	esac
+	if [ "$mode" = 'dir' ] && [ -e "$path" ] && [ ! -d "$path" ]; then
+		path="$fallback"
+	fi
+	parent="${path%/*}"
+	if [ "$parent" != "$path" ] && [ -e "$parent" ] && [ ! -d "$parent" ]; then
+		path="$fallback"
+	fi
+	printf '%s\n' "$path"
+}
+
+resolve_configpath() {
+	local raw="$1" binpath="$2"
+	normalize_runtime_path "$raw" "$DEFAULT_CONFIGPATH" "$binpath" file
+}
+
+resolve_workdir() {
+	local raw="$1" binpath="$2"
+	normalize_runtime_path "$raw" "$DEFAULT_WORKDIR" "$binpath" dir
+}
+
 json_bool() {
 	case "$2" in 1|true|yes|on) json_add_boolean "$1" 1 ;; *) json_add_boolean "$1" 0 ;; esac
 }
@@ -150,11 +180,13 @@ build_template() {
 }
 
 json_status() {
-	local raw_binpath binpath configpath workdir logfile httpport redirect version dns_port arch channel
+	local raw_binpath raw_configpath raw_workdir binpath configpath workdir logfile httpport redirect version dns_port arch channel
 	raw_binpath=$(get_option binpath "$DEFAULT_BINPATH")
 	binpath=$(resolve_binpath "$raw_binpath")
-	configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
-	workdir=$(get_option workdir "$DEFAULT_WORKDIR")
+	raw_configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	configpath=$(resolve_configpath "$raw_configpath" "$binpath")
+	raw_workdir=$(get_option workdir "$DEFAULT_WORKDIR")
+	workdir=$(resolve_workdir "$raw_workdir" "$binpath")
 	logfile=$(get_option logfile '')
 	httpport=$(get_option httpport 3000)
 	redirect=$(get_option redirect none)
@@ -186,8 +218,11 @@ json_status() {
 }
 
 json_meta() {
-	local workdir links choices one
-	workdir=$(get_option workdir "$DEFAULT_WORKDIR")
+	local raw_binpath binpath raw_workdir workdir links choices one
+	raw_binpath=$(get_option binpath "$DEFAULT_BINPATH")
+	binpath=$(resolve_binpath "$raw_binpath")
+	raw_workdir=$(get_option workdir "$DEFAULT_WORKDIR")
+	workdir=$(resolve_workdir "$raw_workdir" "$binpath")
 	links=$(safe_cat "$LINKS_FILE")
 	choices=$(backup_choices "$workdir")
 	json_init
@@ -205,19 +240,22 @@ json_meta() {
 }
 
 json_yaml() {
-	local configpath content source test_log current_exists template_content
-	configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	local raw_binpath raw_configpath binpath configpath content source test_log current_exists template_content
+	raw_binpath=$(get_option binpath "$DEFAULT_BINPATH")
+	binpath=$(resolve_binpath "$raw_binpath")
+	raw_configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	configpath=$(resolve_configpath "$raw_configpath" "$binpath")
 	current_exists=0
 	[ -r "$configpath" ] && current_exists=1
 	if [ -r "$TEMP_CONFIG" ]; then
 		source=temp
 		content=$(safe_cat "$TEMP_CONFIG")
-	elif template_content=$(build_template 2>/dev/null) && [ -n "$template_content" ]; then
-		source=template
-		content="$template_content"
 	elif [ "$current_exists" = 1 ]; then
 		source=config
 		content=$(safe_cat "$configpath")
+	elif template_content=$(build_template 2>/dev/null) && [ -n "$template_content" ]; then
+		source=template
+		content="$template_content"
 	else
 		source=template
 		content=''
@@ -232,8 +270,11 @@ json_yaml() {
 }
 
 json_current_yaml() {
-	local configpath content
-	configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	local raw_binpath raw_configpath binpath configpath content
+	raw_binpath=$(get_option binpath "$DEFAULT_BINPATH")
+	binpath=$(resolve_binpath "$raw_binpath")
+	raw_configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	configpath=$(resolve_configpath "$raw_configpath" "$binpath")
 	content=$(safe_cat "$configpath")
 	json_init
 	json_bool current_exists "$([ -r "$configpath" ] && echo 1 || echo 0)"
@@ -242,12 +283,14 @@ json_current_yaml() {
 }
 
 save_yaml() {
-	local input content configpath binpath
+	local input content raw_binpath raw_configpath binpath configpath
 	input=$(cat)
 	json_load "$input" >/dev/null 2>&1
 	json_get_var content content
-	configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
-	binpath=$(resolve_binpath "$(get_option binpath "$DEFAULT_BINPATH")")
+	raw_binpath=$(get_option binpath "$DEFAULT_BINPATH")
+	binpath=$(resolve_binpath "$raw_binpath")
+	raw_configpath=$(get_option configpath "$DEFAULT_CONFIGPATH")
+	configpath=$(resolve_configpath "$raw_configpath" "$binpath")
 	mkdir -p "${configpath%/*}" 2>/dev/null
 	printf '%s\n' "$content" > "$TEMP_CONFIG"
 	if [ -x "$binpath" ]; then
