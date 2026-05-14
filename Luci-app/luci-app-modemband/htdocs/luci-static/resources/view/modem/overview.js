@@ -112,11 +112,15 @@ function getAtPayloadLines(output, command) {
 	});
 }
 
-function hasUsefulAtPayload(output, command) {
+
+function hasUsefulAtPayload(output, command, commandKey) {
+	if (commandKey === 'qtemp')
+		return parseTemperature(output) != null;
+
 	return getAtPayloadLines(output, command).length > 0;
 }
 
-function execAtCommand(port, commands) {
+function execAtCommand(port, commands, commandKey) {
 	commands = Array.isArray(commands) ? commands : [ commands ];
 
 	return Promise.all(commands.map(function(command) {
@@ -130,7 +134,7 @@ function execAtCommand(port, commands) {
 		var i;
 
 		for (i = 0; i < results.length; i++) {
-			if (hasUsefulAtPayload(results[i].output, results[i].command))
+			if (hasUsefulAtPayload(results[i].output, results[i].command, commandKey))
 				return results[i];
 		}
 
@@ -908,7 +912,7 @@ return view.extend({
 			return Promise.resolve(null);
 
 		for (key in AT_COMMANDS) {
-			tasks.push(execAtCommand(port, AT_COMMANDS[key]).then(functionFactory(key)));
+			tasks.push(execAtCommand(port, AT_COMMANDS[key], key).then(functionFactory(key)));
 		}
 
 		function functionFactory(commandKey) {
