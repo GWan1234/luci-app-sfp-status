@@ -407,7 +407,7 @@ return view.extend({
 		for (var j = 0; j < BAND_TECHS.length; j++) {
 			var bandTech = BAND_TECHS[j];
 
-			s.tab(bandTech.key, bandTech.title, hasBandData(json, bandTech) ? bandTech.supportedTitle + ': ' + formatBandList(json[bandTech.supported], bandTech.prefix, false) : bandTech.error);
+			s.tab(bandTech.key, bandTech.title, hasBandData(json, bandTech) ? '' : bandTech.error);
 
 			if (!hasBandData(json, bandTech)) {
 				o = s.taboption(bandTech.key, form.DummyValue, '_unsupported_' + bandTech.key, _('Modem information'));
