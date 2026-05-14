@@ -246,24 +246,37 @@ function parseQNWINFO(output) {
 	};
 }
 
-function parseTemperature(output) {
-	var matches = output.match(/-?\d+/g);
-	var values;
+function normalizeTemperatureCandidate(value) {
+	var parsed = parseFloat(value);
 
-	if (!matches || !matches.length)
+	if (isNaN(parsed))
 		return null;
 
-	values = matches.map(function(value) {
-		return parseInteger(value);
-	}).filter(function(value) {
-		return value != null && value > -80 && value < 200;
-	});
+	if (Math.abs(parsed) >= 1000)
+		parsed = Math.round(parsed / 100) / 10;
 
-	if (values.length > 1 && values.some(function(value) { return value > 10; })) {
-		values = values.filter(function(value) {
-			return value > 10;
-		});
+	return parsed > -80 && parsed < 200 ? parsed : null;
+}
+
+function parseTemperature(output) {
+	var values = [];
+	var lines = getAtPayloadLines(output);
+	var i;
+
+	for (i = 0; i < lines.length; i++) {
+		var sanitized = lines[i].replace(/"[^"]*"/g, ' ');
+		var matches = sanitized.match(/-?\d+(?:\.\d+)?/g);
+
+		if (!matches)
+			continue;
+
+		values = values.concat(matches.map(normalizeTemperatureCandidate).filter(function(value) {
+			return value != null;
+		}));
 	}
+
+	if (!values.length)
+		return null;
 
 	return values.length ? { celsius: Math.max.apply(null, values), values: values } : null;
 }
@@ -622,6 +635,33 @@ function renderMetricCard(title, value, detail, extraClass, icon) {
 	]));
 }
 
+function renderMetricBadgeIcon(kind) {
+	if (kind === 'signal')
+		return E('span', { 'class': 'mb-badge-icon mb-badge-icon-signal' }, [
+			E('span', { 'class': 'mb-mini-bars' }, [
+				E('span', { 'class': 'mb-mini-bar' }),
+				E('span', { 'class': 'mb-mini-bar' }),
+				E('span', { 'class': 'mb-mini-bar' }),
+				E('span', { 'class': 'mb-mini-bar' })
+			])
+		]);
+
+	if (kind === 'thermal')
+		return E('span', { 'class': 'mb-badge-icon mb-badge-icon-thermal' }, [
+			E('span', { 'class': 'mb-badge-icon-thermal-fill' })
+		]);
+
+	if (kind === 'power')
+		return E('span', { 'class': 'mb-badge-icon mb-badge-icon-power' });
+
+	if (kind === 'region')
+		return E('span', { 'class': 'mb-badge-icon mb-badge-icon-region' }, [
+			E('span', { 'class': 'mb-badge-icon-region-dot' })
+		]);
+
+	return null;
+}
+
 function renderSpotlightCard(title, value, subtitle, extraClass, tags, details) {
 	tags = (tags || []).filter(function(tag) {
 		return tag != null && tag !== '';
@@ -723,17 +763,10 @@ function renderOverview(state) {
 			])
 		])),
 		E('div', { 'class': 'mb-overview-grid' }, compactChildren([
-			renderMetricCard(_('Signal Strength'), signalValue, signalDetail, 'is-signal', [
-				E('span', { 'class': 'mb-mini-bars' }, [
-					E('span', { 'class': 'mb-mini-bar' }),
-					E('span', { 'class': 'mb-mini-bar' }),
-					E('span', { 'class': 'mb-mini-bar' }),
-					E('span', { 'class': 'mb-mini-bar' })
-				])
-			]),
-			renderMetricCard(_('Module Temperature'), getTemperatureText(atInfo), atInfo.qtemp && atInfo.qtemp.values && atInfo.qtemp.values.length > 1 ? (atInfo.qtemp.values.join(' / ') + ' °C') : null, 'is-thermal', 'T'),
-			renderMetricCard(_('Module Voltage'), getVoltageText(atInfo), atInfo.cbc && atInfo.cbc.millivolts ? (atInfo.cbc.millivolts + ' mV') : null, 'is-power', 'V'),
-			renderMetricCard(_('Region'), regionInfo, regionDetail, 'is-region', 'R')
+			renderMetricCard(_('Signal Strength'), signalValue, signalDetail, 'is-signal', renderMetricBadgeIcon('signal')),
+			renderMetricCard(_('Module Temperature'), getTemperatureText(atInfo), atInfo.qtemp && atInfo.qtemp.values && atInfo.qtemp.values.length > 1 ? (atInfo.qtemp.values.join(' / ') + ' °C') : null, 'is-thermal', renderMetricBadgeIcon('thermal')),
+			renderMetricCard(_('Module Voltage'), getVoltageText(atInfo), atInfo.cbc && atInfo.cbc.millivolts ? (atInfo.cbc.millivolts + ' mV') : null, 'is-power', renderMetricBadgeIcon('power')),
+			renderMetricCard(_('Region'), regionInfo, regionDetail, 'is-region', renderMetricBadgeIcon('region'))
 		])),
 		E('div', { 'class': 'mb-overview-grid two-column' }, compactChildren([
 			E('div', { 'class': 'mb-section-card' }, [
@@ -811,15 +844,27 @@ function renderStyle() {
 		'.mb-overview-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}',
 		'.mb-overview-card-title,.mb-section-title{display:flex;align-items:center;gap:8px;font-size:.82rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted,#64748b)}',
 		'.mb-overview-card-badge{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:34px;padding:0 8px;border-radius:12px;background:rgba(15,23,42,.05);color:var(--text-color-high,#1f2937)}',
+		'.mb-overview-card.is-signal .mb-overview-card-badge{background:rgba(56,189,248,.12);color:#38bdf8}',
+		'.mb-overview-card.is-thermal .mb-overview-card-badge{background:rgba(249,115,22,.12);color:#f97316}',
+		'.mb-overview-card.is-power .mb-overview-card-badge{background:rgba(59,130,246,.12);color:#2563eb}',
+		'.mb-overview-card.is-region .mb-overview-card-badge{background:rgba(6,182,212,.12);color:#0891b2}',
 		'.mb-overview-card-main{display:flex;flex-direction:column;gap:10px;margin-top:auto}',
 		'.mb-overview-card-value{font-size:1.5rem;font-weight:700;line-height:1.2;word-break:break-word}',
 		'.mb-overview-card-detail{padding-top:10px;border-top:1px solid var(--border-color-low,#e5e7eb);font-size:.9rem;color:var(--text-muted,#64748b);line-height:1.45;word-break:break-word}',
+		'.mb-badge-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:none}',
 		'.mb-mini-bars{display:flex;align-items:flex-end;gap:2px;height:16px}',
-		'.mb-mini-bar{display:block;width:3px;height:100%;background:#38bdf8;border-radius:999px}',
+		'.mb-mini-bar{display:block;width:3px;height:100%;background:currentColor;border-radius:999px}',
 		'.mb-mini-bar:nth-child(1){height:25%}',
 		'.mb-mini-bar:nth-child(2){height:50%}',
 		'.mb-mini-bar:nth-child(3){height:75%}',
 		'.mb-mini-bar:nth-child(4){height:100%}',
+		'.mb-badge-icon-signal .mb-mini-bars{height:16px}',
+		'.mb-badge-icon-thermal:before{content:"";position:absolute;left:6px;top:1px;width:6px;height:13px;border:2px solid currentColor;border-bottom:none;border-radius:999px 999px 0 0;box-sizing:border-box;opacity:.92}',
+		'.mb-badge-icon-thermal:after{content:"";position:absolute;left:4px;bottom:0;width:10px;height:10px;border-radius:50%;background:currentColor}',
+		'.mb-badge-icon-thermal-fill{position:absolute;left:8px;top:5px;width:2px;height:7px;border-radius:999px;background:currentColor}',
+		'.mb-badge-icon-power:before{content:"";position:absolute;inset:1px 2px 1px 3px;background:currentColor;clip-path:polygon(58% 0,100% 0,67% 40%,100% 40%,34% 100%,46% 60%,0 60%)}',
+		'.mb-badge-icon-region:before{content:"";position:absolute;left:3px;top:1px;width:12px;height:12px;border:2px solid currentColor;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-sizing:border-box}',
+		'.mb-badge-icon-region-dot{position:absolute;left:7px;top:5px;width:4px;height:4px;border-radius:50%;background:currentColor}',
 		'.mb-section-title{padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--border-color-low,#e5e7eb)}',
 		'.mb-section-card .table{margin-bottom:0}',
 		'.mb-section-card .table tr + tr td{border-top:1px solid var(--border-color-low,#eef2f7)}',

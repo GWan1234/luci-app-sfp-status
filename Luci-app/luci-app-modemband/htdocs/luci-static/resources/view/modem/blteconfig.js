@@ -10,15 +10,37 @@
 	Copyright 2022-2024 Rafał Wabik - IceG - From eko.one.pl forum
 */
 
+function resolveWithTimeout(promise, fallback, timeout) {
+	return new Promise(function(resolve) {
+		var settled = false;
+		var timer = window.setTimeout(function() {
+			if (settled)
+				return;
+
+			settled = true;
+			resolve(fallback);
+		}, timeout || 3000);
+
+		L.resolveDefault(promise, fallback).then(function(value) {
+			if (settled)
+				return;
+
+			settled = true;
+			window.clearTimeout(timer);
+			resolve(value);
+		});
+	});
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
-			L.resolveDefault(fs.list('/dev'), []).then(function(devs) {
+			resolveWithTimeout(fs.list('/dev'), []).then(function(devs) {
 				return devs.filter(function(dev) {
 					return dev.name.match(/^ttyUSB/) || dev.name.match(/^cdc-wdm/) || dev.name.match(/^ttyACM/) || dev.name.match(/^mhi_/) || dev.name.match(/^wwan/);
 				});
 			}),
-			L.resolveDefault(fs.exec_direct('/usr/bin/loaded.sh', [ 'json' ]), '{}')
+			resolveWithTimeout(fs.exec_direct('/usr/bin/loaded.sh', [ 'json' ]), '{}')
 		]);
 	},
 
@@ -155,7 +177,7 @@ return view.extend({
 		o = s.taboption('template', form.ListValue, 'modemid', _('Select the modem settings file'),
 			_('Select the template assigned to the Vendor and ProdID of the modem.'));
 		o.load = function(section_id) {
-			return L.resolveDefault(fs.list('/usr/share/modemband'), []).then(L.bind(function(modems) {
+			return resolveWithTimeout(fs.list('/usr/share/modemband'), []).then(L.bind(function(modems) {
 				if (modems.length > 0) {
 					modems.sort(function(a, b) {
 						return String(a.name).localeCompare(String(b.name));

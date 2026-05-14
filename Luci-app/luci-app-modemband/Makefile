@@ -12,7 +12,7 @@ LUCI_DEPENDS:=+modemband
 
 PKG_NAME:=luci-app-modemband
 PKG_VERSION:=2.0
-PKG_RELEASE:=3
+PKG_RELEASE:=6
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

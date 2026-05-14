@@ -2,8 +2,9 @@
 	"luci-app-modemband": {
 		"description": "Grant access to LuCI app modemband",
 		"read": {
-   			"cgi-io": [ "exec" ],
+		   	"cgi-io": [ "exec", "list" ],
     			"file": {
+				"/dev": [ "read" ],
 				"/usr/bin/modemband.sh": [ "exec" ],
 				"/usr/bin/loaded.sh": [ "exec" ],
 				"/usr/bin/mmcli": [ "exec" ],
