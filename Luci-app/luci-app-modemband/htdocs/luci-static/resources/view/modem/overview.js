@@ -118,6 +118,28 @@ function execJson(path, args) {
 	});
 }
 
+function resolveWithTimeout(promise, fallback, timeout) {
+	return new Promise(function(resolve) {
+		var settled = false;
+		var timer = window.setTimeout(function() {
+			if (settled)
+				return;
+
+			settled = true;
+			resolve(fallback);
+		}, timeout || AT_COMMAND_TIMEOUT_MS);
+
+		L.resolveDefault(promise, fallback).then(function(value) {
+			if (settled)
+				return;
+
+			settled = true;
+			window.clearTimeout(timer);
+			resolve(value);
+		});
+	});
+}
+
 function getAtPayloadLines(output, command) {
 	var lines = String(output || '').replace(/\r/g, '\n').split('\n').map(function(line) {
 		return line.trim();
@@ -169,7 +191,7 @@ function execAtCommand(port, commands, commandKey) {
 
 		command = commands[index];
 
-		return execTextWithTimeout(SMS_TOOL_BIN, [ '-d', port, 'at', command ], AT_COMMAND_TIMEOUT_MS).then(function(output) {
+		return execText(SMS_TOOL_BIN, [ '-d', port, 'at', command ]).then(function(output) {
 			var result = {
 				command: command,
 				output: output
@@ -986,10 +1008,13 @@ return view.extend({
 	fetchState: function() {
 		var self = this;
 
-		return Promise.all([
+		if (self._fetchStatePromise)
+			return self._fetchStatePromise;
+
+		self._fetchStatePromise = Promise.all([
 			execJson(MODEMBAND_BIN, [ 'json' ]),
 			this.loadRuntimeState(),
-			uci.load('modemband')
+			resolveWithTimeout(uci.load('modemband'), null, 5000)
 		]).then(function(results) {
 			var bands = results[0] || {};
 			var mmState = results[1];
@@ -1007,7 +1032,15 @@ return view.extend({
 					port: port
 				};
 			});
+		}).then(function(state) {
+			self._fetchStatePromise = null;
+			return state;
+		}, function(err) {
+			self._fetchStatePromise = null;
+			throw err;
 		});
+
+		return self._fetchStatePromise;
 	},
 
 	load: function() {
