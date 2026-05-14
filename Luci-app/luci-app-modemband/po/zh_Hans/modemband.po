@@ -275,9 +275,6 @@ msgstr "频段设置"
 msgid "Modem Overview"
 msgstr "模组概览"
 
-msgid "Runtime data source: ModemManager (mmcli); band data source: modemband."
-msgstr "实时数据来源：ModemManager (mmcli)；频段数据来源：modemband。"
-
 msgid "No runtime modem data is available. Install and start ModemManager to show live status."
 msgstr "当前没有可用的实时模组数据。安装并启动 ModemManager 后可显示实时状态。"
 
@@ -367,3 +364,15 @@ msgstr "中国电信"
 
 msgid "China Broadnet"
 msgstr "中国广电"
+
+msgid "China Mainland"
+msgstr "中国大陆"
+
+msgid "Hong Kong"
+msgstr "中国香港"
+
+msgid "Macao"
+msgstr "中国澳门"
+
+msgid "Taiwan"
+msgstr "中国台湾"

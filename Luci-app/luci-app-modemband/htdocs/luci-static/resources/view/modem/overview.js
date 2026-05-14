@@ -13,7 +13,7 @@ var AT_COMMANDS = {
 	csq: 'AT+CSQ',
 	cops: 'AT+COPS?',
 	qnwinfo: 'AT+QNWINFO',
-	qtemp: 'AT+QTEMP?',
+	qtemp: [ 'AT+QTEMP', 'AT+QTEMP?', 'AT+CPMUTEMP' ],
 	cbc: 'AT+CBC',
 	qeng: 'AT+QENG="servingcell"'
 };
@@ -31,6 +31,13 @@ var PLMN_OPERATOR_MAP = {
 	'46005': 'China Telecom',
 	'46011': 'China Telecom',
 	'46015': 'China Broadnet'
+};
+
+var MCC_REGION_MAP = {
+	'460': 'China Mainland',
+	'454': 'Hong Kong',
+	'455': 'Macao',
+	'466': 'Taiwan'
 };
 
 function parseJson(data) {
@@ -85,6 +92,37 @@ function execJson(path, args) {
 		var json = parseJson(output);
 
 		return normalizeDeep(json);
+	});
+}
+
+function hasUsefulAtPayload(output) {
+	output = String(output || '').trim();
+
+	if (!output)
+		return false;
+
+	return !/^(OK|ERROR|\+CME ERROR:.*)$/i.test(output);
+}
+
+function execAtCommand(port, commands) {
+	commands = Array.isArray(commands) ? commands : [ commands ];
+
+	return Promise.all(commands.map(function(command) {
+		return execText(SMS_TOOL_BIN, [ '-d', port, 'at', command ]).then(function(output) {
+			return {
+				command: command,
+				output: output
+			};
+		});
+	})).then(function(results) {
+		var i;
+
+		for (i = 0; i < results.length; i++) {
+			if (hasUsefulAtPayload(results[i].output))
+				return results[i];
+		}
+
+		return results[0] || { command: null, output: '' };
 	});
 }
 
@@ -209,7 +247,13 @@ function parseTemperature(output) {
 		return value != null && value > -80 && value < 200;
 	});
 
-	return values.length ? { celsius: values[0], values: values } : null;
+	if (values.length > 1 && values.some(function(value) { return value > 10; })) {
+		values = values.filter(function(value) {
+			return value > 10;
+		});
+	}
+
+	return values.length ? { celsius: Math.max.apply(null, values), values: values } : null;
 }
 
 function parseCsvLine(text) {
@@ -274,6 +318,15 @@ function lookupOperatorName(code) {
 		return null;
 
 	return _(PLMN_OPERATOR_MAP[String(code)]);
+}
+
+function lookupRegionName(mcc) {
+	mcc = normalizeValue(mcc);
+
+	if (!mcc || !MCC_REGION_MAP[String(mcc)])
+		return null;
+
+	return _(MCC_REGION_MAP[String(mcc)]);
 }
 
 function percentFromRSRP(rsrp) {
@@ -345,19 +398,56 @@ function getMmInfo(mmState) {
 	};
 }
 
-function formatRegion(mmInfo, atInfo) {
-	var parts = [];
-	var mcc = mmInfo.location && mmInfo.location.mcc ? mmInfo.location.mcc : atInfo && atInfo.qeng ? atInfo.qeng.mcc : null;
-	var mnc = mmInfo.location && mmInfo.location.mnc ? mmInfo.location.mnc : atInfo && atInfo.qeng ? atInfo.qeng.mnc : null;
-	var tac = mmInfo.location && mmInfo.location.tac ? mmInfo.location.tac : atInfo && atInfo.qeng ? atInfo.qeng.tac : null;
-	var cid = mmInfo.location && mmInfo.location.cid ? mmInfo.location.cid : atInfo && atInfo.qeng ? atInfo.qeng.cellId : null;
+function getLocationInfo(mmInfo, atInfo) {
+	var location = mmInfo && mmInfo.location ? mmInfo.location : {};
+	var qeng = atInfo && atInfo.qeng ? atInfo.qeng : {};
 
-	if (mcc || mnc)
-		parts.push('MCC/MNC ' + [ mcc, mnc ].filter(Boolean).join('/'));
-	if (tac)
-		parts.push('TAC ' + tac);
-	if (cid)
-		parts.push('CID ' + cid);
+	return {
+		mcc: normalizeValue(location.mcc || qeng.mcc),
+		mnc: normalizeValue(location.mnc || qeng.mnc),
+		lac: normalizeValue(location.lac),
+		tac: normalizeValue(location.tac || qeng.tac),
+		cid: normalizeValue(location.cid || qeng.cellId)
+	};
+}
+
+function formatAreaCode(locationInfo) {
+	if (locationInfo.tac)
+		return 'TAC ' + locationInfo.tac;
+
+	if (locationInfo.lac)
+		return 'LAC ' + locationInfo.lac;
+
+	return null;
+}
+
+function formatRegion(mmInfo, atInfo) {
+	var locationInfo = getLocationInfo(mmInfo, atInfo);
+	var parts = [];
+	var regionName = lookupRegionName(locationInfo.mcc);
+	var areaCode = formatAreaCode(locationInfo);
+
+	if (regionName)
+		parts.push(regionName);
+	if (locationInfo.mcc || locationInfo.mnc)
+		parts.push('MCC/MNC ' + [ locationInfo.mcc, locationInfo.mnc ].filter(Boolean).join('/'));
+	if (areaCode)
+		parts.push(areaCode);
+	if (locationInfo.cid)
+		parts.push('CID ' + locationInfo.cid);
+
+	return parts.length ? parts.join(' · ') : null;
+}
+
+function formatRegionDetail(mmInfo, atInfo) {
+	var locationInfo = getLocationInfo(mmInfo, atInfo);
+	var parts = [];
+	var areaCode = formatAreaCode(locationInfo);
+
+	if (areaCode)
+		parts.push(areaCode);
+	if (locationInfo.cid)
+		parts.push('CID ' + locationInfo.cid);
 
 	return parts.length ? parts.join(' · ') : null;
 }
@@ -491,6 +581,32 @@ function getBandFamilies(bands) {
 	return families;
 }
 
+function getSelectedBandEntries(bands) {
+	var entries = [];
+	var familyBands = [
+		{ family: 'LTE', prefix: 'B', values: bands.enabled || [], className: 'is-lte' },
+		{ family: '5G SA', prefix: 'n', values: bands.enabled5gsa || [], className: 'is-5gsa' },
+		{ family: '5G NSA', prefix: 'n', values: bands.enabled5gnsa || [], className: 'is-5gnsa' }
+	];
+	var i;
+	var j;
+	var tokens;
+
+	for (i = 0; i < familyBands.length; i++) {
+		tokens = getBandTokens(familyBands[i].values, familyBands[i].prefix);
+
+		for (j = 0; j < tokens.length; j++) {
+			entries.push({
+				family: familyBands[i].family,
+				className: familyBands[i].className,
+				value: tokens[j]
+			});
+		}
+	}
+
+	return entries;
+}
+
 function renderTag(text, extraClass) {
 	if (text == null || text === '')
 		return null;
@@ -516,12 +632,14 @@ function renderDetailRows(items) {
 
 function renderMetricCard(title, value, detail, extraClass, icon) {
 	return E('div', { 'class': 'mb-overview-card ' + (extraClass || '') }, [
-		E('div', { 'class': 'mb-overview-card-title' }, [
-			icon ? E('span', { 'class': 'mb-overview-card-icon' }, icon) : null,
-			E('span', {}, title)
+		E('div', { 'class': 'mb-overview-card-head' }, [
+			E('div', { 'class': 'mb-overview-card-title' }, title),
+			icon ? E('span', { 'class': 'mb-overview-card-badge' }, icon) : null
 		]),
-		E('div', { 'class': 'mb-overview-card-value' }, displayValue(value)),
-		detail ? E('div', { 'class': 'mb-overview-card-detail' }, detail) : null
+		E('div', { 'class': 'mb-overview-card-main' }, [
+			E('div', { 'class': 'mb-overview-card-value' }, displayValue(value)),
+			detail ? E('div', { 'class': 'mb-overview-card-detail' }, detail) : null
+		])
 	]);
 }
 
@@ -531,12 +649,16 @@ function renderSpotlightCard(title, value, subtitle, extraClass, tags, details) 
 	});
 
 	return E('div', { 'class': 'mb-spotlight-card ' + (extraClass || '') }, [
-		E('div', { 'class': 'mb-spotlight-title' }, title),
-		E('div', { 'class': 'mb-spotlight-value' }, displayValue(value)),
-		subtitle ? E('div', { 'class': 'mb-spotlight-subtitle' }, subtitle) : null,
-		tags.length ? E('div', { 'class': 'mb-chip-list' }, tags.map(function(tag) {
-			return renderTag(tag);
-		})) : null,
+		E('div', { 'class': 'mb-spotlight-head' }, [
+			E('div', { 'class': 'mb-spotlight-title' }, title)
+		]),
+		E('div', { 'class': 'mb-spotlight-body' }, [
+			E('div', { 'class': 'mb-spotlight-value' }, displayValue(value)),
+			subtitle ? E('div', { 'class': 'mb-spotlight-subtitle' }, subtitle) : null,
+			tags.length ? E('div', { 'class': 'mb-chip-list' }, tags.map(function(tag) {
+				return renderTag(tag);
+			})) : null
+		]),
 		renderDetailRows(details)
 	]);
 }
@@ -566,8 +688,7 @@ function renderModuleHero(mmInfo, atInfo, bands, signalPercent) {
 				E('span', { 'class': 'mb-pill' }, badge),
 				mmInfo.state ? E('span', { 'class': 'mb-pill' }, mmInfo.state) : null,
 				mmInfo.powerState ? E('span', { 'class': 'mb-pill' }, mmInfo.powerState) : null
-			]),
-			E('div', { 'class': 'mb-hero-meta' }, _('Runtime data source: ModemManager (mmcli); band data source: modemband.'))
+			])
 		])
 	]);
 }
@@ -583,22 +704,14 @@ function renderInfoTable(rows) {
 	}));
 }
 
-function renderBandGroup(title, values, prefix) {
-	var tokens = getBandTokens(values, prefix);
-
-	return E('div', { 'class': 'mb-band-group' }, [
-		E('div', { 'class': 'mb-band-group-title' }, title),
-		E('div', { 'class': 'mb-band-chip-list' }, (tokens.length ? tokens : [ '--' ]).map(function(token) {
-			return renderTag(token, token === '--' ? 'is-placeholder' : 'is-band');
-		}))
-	]);
-}
-
 function renderBandSection(bands, servingBand, accessInfo) {
 	var families = getBandFamilies(bands);
+	var entries = getSelectedBandEntries(bands);
 
 	return E('div', { 'class': 'mb-spotlight-card is-bands' }, [
-		E('div', { 'class': 'mb-spotlight-title' }, _('Selected Bands')),
+		E('div', { 'class': 'mb-spotlight-head' }, [
+			E('div', { 'class': 'mb-spotlight-title' }, _('Selected Bands'))
+		]),
 		E('div', { 'class': 'mb-band-focus' }, [
 			E('div', { 'class': 'mb-band-focus-label' }, _('Serving Band')),
 			E('div', { 'class': 'mb-band-focus-value' }, displayValue(servingBand)),
@@ -607,10 +720,10 @@ function renderBandSection(bands, servingBand, accessInfo) {
 		families.length ? E('div', { 'class': 'mb-chip-list' }, families.map(function(family) {
 			return renderTag(family, 'is-family');
 		})) : null,
-		E('div', { 'class': 'mb-band-grid' }, [
-			renderBandGroup(_('LTE Selected Bands'), bands.enabled, 'B'),
-			renderBandGroup(_('5G SA Selected Bands'), bands.enabled5gsa, 'n'),
-			renderBandGroup(_('5G NSA Selected Bands'), bands.enabled5gnsa, 'n')
+		E('div', { 'class': 'mb-band-sheet' }, [
+			E('div', { 'class': 'mb-band-selected-list' }, (entries.length ? entries : [ { value: '--', className: 'is-placeholder' } ]).map(function(entry) {
+				return renderTag(entry.value, 'is-band ' + (entry.className || ''));
+			}))
 		])
 	]);
 }
@@ -623,6 +736,7 @@ function renderOverview(state) {
 	var registration = mmInfo.registrationState || (atInfo.qnwinfo && atInfo.qnwinfo.network) || _('No active network information is currently available.');
 	var operatorInfo = formatOperator(mmInfo, atInfo) || _('Unavailable from current backend');
 	var regionInfo = formatRegion(mmInfo, atInfo) || _('Unavailable from current backend');
+	var regionDetail = formatRegionDetail(mmInfo, atInfo);
 	var signalDetail = formatSignalDetails(mmInfo, atInfo) || _('No active network information is currently available.');
 	var signalValue = signalPercent != null ? (signalPercent + '%') : '--';
 	var accessInfo = formatAccess(mmInfo, atInfo) || _('Unavailable from current backend');
@@ -665,7 +779,7 @@ function renderOverview(state) {
 			]),
 			renderMetricCard(_('Module Temperature'), getTemperatureText(atInfo), atInfo.qtemp && atInfo.qtemp.values && atInfo.qtemp.values.length > 1 ? (atInfo.qtemp.values.join(' / ') + ' °C') : null, 'is-thermal', 'T'),
 			renderMetricCard(_('Module Voltage'), getVoltageText(atInfo), atInfo.cbc && atInfo.cbc.millivolts ? (atInfo.cbc.millivolts + ' mV') : null, 'is-power', 'V'),
-			renderMetricCard(_('Region'), regionInfo, mmInfo.location && mmInfo.location.lac ? ('LAC ' + mmInfo.location.lac) : null, 'is-region', 'R')
+			renderMetricCard(_('Region'), regionInfo, regionDetail, 'is-region', 'R')
 		]),
 		E('div', { 'class': 'mb-overview-grid two-column' }, [
 			E('div', { 'class': 'mb-section-card' }, [
@@ -713,52 +827,59 @@ function renderStyle() {
 		'.mb-hero-title{font-size:1.55rem;font-weight:700;line-height:1.2;word-break:break-word}',
 		'.mb-hero-subtitle{display:flex;flex-wrap:wrap;gap:8px}',
 		'.mb-pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:rgba(15,23,42,.06);font-size:.84rem;color:var(--text-color-high,#1f2937)}',
-		'.mb-hero-meta{font-size:.92rem;color:var(--text-muted,#64748b)}',
-		'.mb-spotlight-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}',
-		'.mb-spotlight-card{position:relative;overflow:hidden;border:1px solid var(--border-color,#d9dfe7);border-radius:18px;background:linear-gradient(180deg,var(--background-color-high,#fff),rgba(248,250,252,.94));padding:16px;box-shadow:0 10px 24px rgba(15,23,42,.06)}',
+		'.mb-spotlight-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;align-items:stretch}',
+		'.mb-spotlight-card{position:relative;overflow:hidden;display:flex;flex-direction:column;gap:12px;height:100%;border:1px solid var(--border-color,#d9dfe7);border-radius:18px;background:linear-gradient(180deg,var(--background-color-high,#fff),rgba(248,250,252,.94));padding:18px;box-shadow:0 10px 24px rgba(15,23,42,.06)}',
 		'.mb-spotlight-card:before{content:"";position:absolute;inset:0 0 auto 0;height:4px;background:linear-gradient(90deg,#94a3b8,#e2e8f0)}',
 		'.mb-spotlight-card.is-operator:before{background:linear-gradient(90deg,#0ea5e9,#2563eb)}',
 		'.mb-spotlight-card.is-cell:before{background:linear-gradient(90deg,#10b981,#22c55e)}',
 		'.mb-spotlight-card.is-bands:before{background:linear-gradient(90deg,#f59e0b,#ef4444)}',
-		'.mb-spotlight-title{display:flex;align-items:center;gap:8px;font-size:.92rem;color:var(--text-muted,#64748b);margin-bottom:10px}',
-		'.mb-spotlight-value{font-size:1.45rem;font-weight:700;line-height:1.25;word-break:break-word}',
-		'.mb-spotlight-subtitle{margin-top:8px;font-size:.92rem;color:var(--text-color-high,#334155);line-height:1.45;word-break:break-word}',
-		'.mb-chip-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}',
+		'.mb-spotlight-head{display:flex;align-items:center;justify-content:space-between;gap:12px}',
+		'.mb-spotlight-title{display:flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted,#64748b)}',
+		'.mb-spotlight-body{display:flex;flex-direction:column;gap:10px;min-height:0}',
+		'.mb-spotlight-value{font-size:1.55rem;font-weight:700;line-height:1.25;word-break:break-word}',
+		'.mb-spotlight-subtitle{font-size:.92rem;color:var(--text-color-high,#334155);line-height:1.45;word-break:break-word}',
+		'.mb-chip-list{display:flex;flex-wrap:wrap;gap:8px}',
 		'.mb-status-chip{display:inline-flex;align-items:center;max-width:100%;padding:6px 10px;border-radius:999px;background:rgba(15,23,42,.06);color:var(--text-color-high,#334155);font-size:.82rem;font-weight:600;line-height:1.2;word-break:break-word}',
 		'.mb-status-chip.is-band{background:rgba(37,99,235,.08);color:#1d4ed8}',
 		'.mb-status-chip.is-family{background:rgba(245,158,11,.12);color:#b45309}',
 		'.mb-status-chip.is-placeholder{color:var(--text-muted,#64748b);font-weight:500}',
-		'.mb-detail-rows{display:grid;gap:10px;margin-top:14px}',
-		'.mb-detail-row{display:flex;justify-content:space-between;gap:12px;padding-top:10px;border-top:1px solid var(--border-color-low,#e5e7eb)}',
+		'.mb-detail-rows{display:grid;gap:10px;margin-top:auto;padding-top:4px}',
+		'.mb-detail-row{display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border-color-low,#e5e7eb);border-radius:12px;background:rgba(15,23,42,.03)}',
 		'.mb-detail-label{color:var(--text-muted,#64748b);font-size:.85rem}',
 		'.mb-detail-value{color:var(--text-color-high,#0f172a);font-size:.9rem;text-align:right;word-break:break-word}',
-		'.mb-band-focus{margin-top:4px;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(255,255,255,.95));border:1px solid rgba(245,158,11,.18)}',
+		'.mb-band-focus{padding:14px 15px;border-radius:14px;background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(255,255,255,.95));border:1px solid rgba(245,158,11,.18)}',
 		'.mb-band-focus-label{font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted,#64748b)}',
 		'.mb-band-focus-value{margin-top:6px;font-size:1.3rem;font-weight:700;word-break:break-word}',
 		'.mb-band-focus-detail{margin-top:6px;font-size:.88rem;color:var(--text-muted,#64748b);line-height:1.4}',
-		'.mb-band-grid{display:grid;gap:10px;margin-top:12px}',
-		'.mb-band-group{padding:10px 12px;border-radius:14px;background:rgba(15,23,42,.03);border:1px solid var(--border-color-low,#e5e7eb)}',
-		'.mb-band-group-title{font-size:.85rem;color:var(--text-muted,#64748b);margin-bottom:8px}',
-		'.mb-band-chip-list{display:flex;flex-wrap:wrap;gap:6px}',
-		'.mb-overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}',
+		'.mb-band-sheet{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--border-color-low,#e5e7eb);border-radius:14px;background:rgba(15,23,42,.03)}',
+		'.mb-band-selected-list{display:flex;flex-wrap:wrap;align-content:flex-start;gap:8px;min-height:74px}',
+		'.mb-status-chip.is-band.is-lte{background:rgba(37,99,235,.10);color:#1d4ed8}',
+		'.mb-status-chip.is-band.is-5gsa{background:rgba(234,88,12,.12);color:#c2410c}',
+		'.mb-status-chip.is-band.is-5gnsa{background:rgba(147,51,234,.12);color:#7e22ce}',
+		'.mb-overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;align-items:stretch}',
 		'.mb-overview-grid.two-column{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}',
-		'.mb-overview-card,.mb-section-card{position:relative;border:1px solid var(--border-color,#d9dfe7);border-radius:16px;background:var(--background-color-high,#fff);padding:16px;box-shadow:0 6px 18px rgba(15,23,42,.05)}',
+		'.mb-overview-card,.mb-section-card{position:relative;display:flex;flex-direction:column;height:100%;border:1px solid var(--border-color,#d9dfe7);border-radius:16px;background:var(--background-color-high,#fff);padding:16px;box-shadow:0 6px 18px rgba(15,23,42,.05)}',
 		'.mb-overview-card:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;border-radius:16px 0 0 16px;background:linear-gradient(180deg,#cbd5e1,#94a3b8)}',
 		'.mb-overview-card.is-signal:before{background:linear-gradient(180deg,#22c55e,#14b8a6)}',
 		'.mb-overview-card.is-thermal:before{background:linear-gradient(180deg,#f59e0b,#ef4444)}',
 		'.mb-overview-card.is-power:before{background:linear-gradient(180deg,#8b5cf6,#2563eb)}',
 		'.mb-overview-card.is-region:before{background:linear-gradient(180deg,#0ea5e9,#06b6d4)}',
-		'.mb-overview-card-title,.mb-section-title{display:flex;align-items:center;gap:8px;font-size:.92rem;color:var(--text-muted,#64748b);margin-bottom:10px}',
-		'.mb-overview-card-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px}',
+		'.mb-overview-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}',
+		'.mb-overview-card-title,.mb-section-title{display:flex;align-items:center;gap:8px;font-size:.82rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted,#64748b)}',
+		'.mb-overview-card-badge{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:34px;padding:0 8px;border-radius:12px;background:rgba(15,23,42,.05);color:var(--text-color-high,#1f2937)}',
+		'.mb-overview-card-main{display:flex;flex-direction:column;gap:10px;margin-top:auto}',
 		'.mb-overview-card-value{font-size:1.5rem;font-weight:700;line-height:1.2;word-break:break-word}',
-		'.mb-overview-card-detail{margin-top:8px;font-size:.9rem;color:var(--text-muted,#64748b);line-height:1.45;word-break:break-word}',
+		'.mb-overview-card-detail{padding-top:10px;border-top:1px solid var(--border-color-low,#e5e7eb);font-size:.9rem;color:var(--text-muted,#64748b);line-height:1.45;word-break:break-word}',
 		'.mb-mini-bars{display:flex;align-items:flex-end;gap:2px;height:16px}',
 		'.mb-mini-bar{display:block;width:3px;height:100%;background:#38bdf8;border-radius:999px}',
 		'.mb-mini-bar:nth-child(1){height:25%}',
 		'.mb-mini-bar:nth-child(2){height:50%}',
 		'.mb-mini-bar:nth-child(3){height:75%}',
 		'.mb-mini-bar:nth-child(4){height:100%}',
+		'.mb-section-title{padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--border-color-low,#e5e7eb)}',
 		'.mb-section-card .table{margin-bottom:0}',
+		'.mb-section-card .table tr + tr td{border-top:1px solid var(--border-color-low,#eef2f7)}',
+		'.mb-section-card .table td:first-child{color:var(--text-muted,#64748b)}',
 		'.mb-section-card .table td{vertical-align:top}',
 		'@media (max-width:780px){.mb-detail-row{flex-direction:column;align-items:flex-start}.mb-detail-value{text-align:left}}',
 		'@media (max-width:640px){.mb-hero-card{grid-template-columns:1fr;gap:14px}.mb-hero-icon{flex-direction:row;justify-content:flex-start}.mb-hero-title{font-size:1.3rem}.mb-band-focus-value{font-size:1.1rem}}'
@@ -794,12 +915,12 @@ return view.extend({
 			return Promise.resolve(null);
 
 		for (key in AT_COMMANDS) {
-			tasks.push(execText(SMS_TOOL_BIN, [ '-d', port, 'at', AT_COMMANDS[key] ]).then(functionFactory(key)));
+			tasks.push(execAtCommand(port, AT_COMMANDS[key]).then(functionFactory(key)));
 		}
 
 		function functionFactory(commandKey) {
 			return function(result) {
-				return { key: commandKey, result: result };
+				return { key: commandKey, result: result.output };
 			};
 		}
 
@@ -857,7 +978,6 @@ return view.extend({
 	render: function(state) {
 		var root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('Modem Overview')),
-			E('div', { 'class': 'cbi-map-descr' }, _('Runtime data source: ModemManager (mmcli); band data source: modemband.')),
 			renderStyle(),
 			E('div')
 		]);

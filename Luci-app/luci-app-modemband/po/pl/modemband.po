@@ -37,9 +37,6 @@ msgstr "Ustawienia pasm"
 msgid "Modem Overview"
 msgstr "Przegląd modemu"
 
-msgid "Runtime data source: ModemManager (mmcli); band data source: modemband."
-msgstr "Źródło danych czasu rzeczywistego: ModemManager (mmcli); źródło danych pasm: modemband."
-
 msgid "No runtime modem data is available. Install and start ModemManager to show live status."
 msgstr "Brak dostępnych danych modemu w czasie rzeczywistym. Zainstaluj i uruchom ModemManager, aby wyświetlić status na żywo."
 
@@ -129,6 +126,18 @@ msgstr "China Telecom"
 
 msgid "China Broadnet"
 msgstr "China Broadnet"
+
+msgid "China Mainland"
+msgstr "Chiny kontynentalne"
+
+msgid "Hong Kong"
+msgstr "Hongkong"
+
+msgid "Macao"
+msgstr "Makau"
+
+msgid "Taiwan"
+msgstr "Tajwan"
 
 msgid "Supported LTE bands"
 msgstr "Obsługiwane pasma LTE"
