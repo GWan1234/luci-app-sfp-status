@@ -260,11 +260,15 @@ function normalizeTemperatureCandidate(value) {
 
 function parseTemperature(output) {
 	var values = [];
-	var lines = getAtPayloadLines(output);
+	var lines = getAtPayloadLines(output).filter(function(line) {
+		return /(?:\+)?(?:QTEMP|CPMUTEMP)\b/i.test(line);
+	});
 	var i;
 
 	for (i = 0; i < lines.length; i++) {
-		var sanitized = lines[i].replace(/"[^"]*"/g, ' ');
+		var sanitized = lines[i]
+			.replace(/^.*?(?:\+)?(?:QTEMP|CPMUTEMP)\s*:?\s*/i, '')
+			.replace(/"[^"]*"/g, ' ');
 		var matches = sanitized.match(/-?\d+(?:\.\d+)?/g);
 
 		if (!matches)
