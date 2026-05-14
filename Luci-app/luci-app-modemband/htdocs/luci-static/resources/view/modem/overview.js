@@ -8,14 +8,15 @@
 var MMCLI_BIN = '/usr/bin/mmcli';
 var MODEMBAND_BIN = '/usr/bin/modemband.sh';
 var SMS_TOOL_BIN = '/usr/bin/sms_tool';
+var AT_COMMAND_TIMEOUT_MS = 4000;
 
 var AT_COMMANDS = {
 	csq: 'AT+CSQ',
 	cops: 'AT+COPS?',
-	qnwinfo: 'AT+QNWINFO',
+	qnwinfo: [ 'AT+QNWINFO', 'AT+QNWINFO' ],
 	qtemp: [ 'AT+QTEMP', 'AT+QTEMP?', 'AT+CPMUTEMP' ],
-	cbc: 'AT+CBC',
-	qeng: 'AT+QENG="servingcell"'
+	cbc: [ 'AT+CBC', 'AT+CBC' ],
+	qeng: [ 'AT+QENG="servingcell"', 'AT+QENG="servingcell"' ]
 };
 
 var PLMN_OPERATOR_MAP = {
@@ -87,6 +88,28 @@ function execText(path, args) {
 	});
 }
 
+function execTextWithTimeout(path, args, timeout) {
+	return new Promise(function(resolve) {
+		var settled = false;
+		var timer = window.setTimeout(function() {
+			if (settled)
+				return;
+
+			settled = true;
+			resolve('');
+		}, timeout || AT_COMMAND_TIMEOUT_MS);
+
+		execText(path, args).then(function(output) {
+			if (settled)
+				return;
+
+			settled = true;
+			window.clearTimeout(timer);
+			resolve(output);
+		});
+	});
+}
+
 function execJson(path, args) {
 	return execText(path, args).then(function(output) {
 		var json = parseJson(output);
@@ -114,8 +137,23 @@ function getAtPayloadLines(output, command) {
 
 
 function hasUsefulAtPayload(output, command, commandKey) {
+	if (commandKey === 'csq')
+		return parseCSQ(output) != null;
+
+	if (commandKey === 'cops')
+		return /\+COPS:/i.test(output);
+
+	if (commandKey === 'qnwinfo')
+		return parseQNWINFO(output) != null;
+
 	if (commandKey === 'qtemp')
 		return parseTemperature(output) != null;
+
+	if (commandKey === 'cbc')
+		return parseCBC(output) != null;
+
+	if (commandKey === 'qeng')
+		return parseQENG(output) != null;
 
 	return getAtPayloadLines(output, command).length > 0;
 }
@@ -123,23 +161,28 @@ function hasUsefulAtPayload(output, command, commandKey) {
 function execAtCommand(port, commands, commandKey) {
 	commands = Array.isArray(commands) ? commands : [ commands ];
 
-	return Promise.all(commands.map(function(command) {
-		return execText(SMS_TOOL_BIN, [ '-d', port, 'at', command ]).then(function(output) {
-			return {
+	function run(index, firstResult) {
+		var command;
+
+		if (index >= commands.length)
+			return Promise.resolve(firstResult || { command: null, output: '' });
+
+		command = commands[index];
+
+		return execTextWithTimeout(SMS_TOOL_BIN, [ '-d', port, 'at', command ], AT_COMMAND_TIMEOUT_MS).then(function(output) {
+			var result = {
 				command: command,
 				output: output
 			};
+
+			if (hasUsefulAtPayload(result.output, result.command, commandKey))
+				return result;
+
+			return run(index + 1, firstResult || result);
 		});
-	})).then(function(results) {
-		var i;
+	}
 
-		for (i = 0; i < results.length; i++) {
-			if (hasUsefulAtPayload(results[i].output, results[i].command, commandKey))
-				return results[i];
-		}
-
-		return results[0] || { command: null, output: '' };
-	});
+	return run(0, null);
 }
 
 function parseIndex(dbusPath) {
@@ -272,7 +315,9 @@ function parseTemperature(output) {
 	for (i = 0; i < lines.length; i++) {
 		var sanitized = lines[i]
 			.replace(/^.*?(?:\+)?(?:QTEMP|CPMUTEMP)\s*:?\s*/i, '')
-			.replace(/"[^"]*"/g, ' ');
+			.replace(/"([^"]*)"/g, function(match, token) {
+				return /^-?\d+(?:\.\d+)?$/.test(token) ? token : ' ';
+			});
 		var matches = sanitized.match(/-?\d+(?:\.\d+)?/g);
 
 		if (!matches)
@@ -905,29 +950,26 @@ return view.extend({
 	},
 
 	loadAtState: function(port) {
-		var tasks = [];
+		var sequence;
+		var raw = {};
 		var key;
 
 		if (!port)
 			return Promise.resolve(null);
 
-		for (key in AT_COMMANDS) {
-			tasks.push(execAtCommand(port, AT_COMMANDS[key], key).then(functionFactory(key)));
-		}
+		sequence = Promise.resolve();
 
 		function functionFactory(commandKey) {
 			return function(result) {
-				return { key: commandKey, result: result.output };
+				raw[commandKey] = result.output;
 			};
 		}
 
-		return Promise.all(tasks).then(function(results) {
-			var raw = {};
-			var parsed = {};
-			var i;
+		for (key in AT_COMMANDS)
+			sequence = sequence.then(execAtCommand.bind(null, port, AT_COMMANDS[key], key)).then(functionFactory(key));
 
-			for (i = 0; i < results.length; i++)
-				raw[results[i].key] = results[i].result;
+		return sequence.then(function() {
+			var parsed = {};
 
 			parsed.csq = parseCSQ(raw.csq || '');
 			parsed.cops = normalizeValue(raw.cops);
